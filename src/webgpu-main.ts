@@ -26,6 +26,7 @@ let gpu: any = null,
   cancelled = false,
   cqNonFiniteScales = 0
 const DEBUG_LATENTS = new URLSearchParams(location.search).has('DEBUG_LATENTS')
+const msgs = $<HTMLDivElement>('messages')
 
 type Counters = { dispatches: number; flops: number; forwardMs: number }
 type Candidate = {
@@ -1047,9 +1048,10 @@ $('topK').addEventListener('change', () => {})
 ;(async () => {
   try {
     if (!('gpu' in navigator)) throw Error('当前浏览器没有 WebGPU')
-    gpu = await (navigator as any).gpu.requestAdapter()
-    if (!gpu) throw Error('无法获取 WebGPU adapter')
-    const info = gpu.info || {}
+    const adapter = await (navigator as any).gpu.requestAdapter()
+    if (!adapter) throw Error('无法获取 WebGPU adapter')
+    gpu = await adapter.requestDevice()
+    const info = adapter.info || {}
     gpuStatus.textContent = `WebGPU 就绪 · ${info.vendor || 'unknown'} ${
       info.architecture || ''
     }`
