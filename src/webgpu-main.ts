@@ -20,11 +20,6 @@ const TAG = 0x05e12a83,
   MAP_READ = 1,
   UNIFORM = 64,
   SHADER = 4
-const gpuStatus = $<HTMLDivElement>('gpuStatus'),
-  msgs = $<HTMLDivElement>('messages'),
-  progress = $<HTMLDivElement>('progress'),
-  metrics = $<HTMLDivElement>('metrics'),
-  cancel = $<HTMLButtonElement>('cancel')
 let gpu: any = null,
   model: Model | null = null,
   rt: Runtime | null = null,
@@ -875,10 +870,10 @@ async function run () {
   add('user', q)
   const assistant = add('assistant', '生成中…')
   const tools = JSON.parse($<HTMLTextAreaElement>('tools').value || '[]'),
-    prompt = `<|im_start|>user\
-<tools>${JSON.stringify(tools)}</tools>\
-${q}<|im_end|>\
-<|im_start|>assistant\
+    prompt = `<|im_start|>user\\
+<tools>${JSON.stringify(tools)}</tools>\\
+${q}<|im_end|>\\
+<|im_start|>assistant\\
 `,
     ids = [2, ...model.tok.encode(prompt)],
     gen: number[] = [],
@@ -1023,6 +1018,8 @@ $('loadDemo').addEventListener('click', () => {
     null,
     2
   )
+  $<HTMLTextAreaElement>('query').value = '调用 set_lights, 房间 1, 亮度 0'
+  $<HTMLTextAreaElement>('query').focus()
 })
 $('modelFile').addEventListener('change', async e => {
   const f = (e.target as HTMLInputElement).files?.[0]
@@ -1037,29 +1034,26 @@ $('modelFile').addEventListener('change', async e => {
     }d · ${model.g.num_layers} 层 · ${
       model.t.length
     } tensors · 文件权重 ${formatBytes(
-      model.t
-        .filter(x => x.dtype !== RAW)
-        .reduce((s, x) => s + x.data.byteLength, 0)
-    )} · CQ 异常 norm ${cqNonFiniteScales} 组 · GPU 权重 ${formatBytes(
-      rt.weightBytes
-    )} · 峰值 ${formatBytes(rt.peakBytes)}`
-    $<HTMLDivElement>('modelInfo').className = 'ok'
+      model.t.reduce((s, t) => s + t.data.byteLength, 0)
+    )} · GPU ${formatBytes(rt.weightBytes)}`
   } catch (e: any) {
-    console.error(e)
-    $<HTMLDivElement>('modelInfo').textContent = e.message
-    $<HTMLDivElement>('modelInfo').className = 'bad'
+    model = null
+    rt = null
+    $<HTMLDivElement>('modelInfo').textContent = '加载失败：' + (e?.message || e)
   }
 })
+$('maxTokens').addEventListener('change', () => {})
+$('topK').addEventListener('change', () => {})
 ;(async () => {
   try {
-    if (!('gpu' in navigator)) throw Error('当前浏览器不支持 WebGPU')
-    const a = await (navigator as any).gpu.requestAdapter()
-    if (!a) throw Error('未找到 WebGPU 适配器')
-    gpu = await a.requestDevice()
-    gpuStatus.textContent = `WebGPU 已启用 · ${a.name || '默认适配器'}`
-    gpuStatus.className = 'status ok'
+    if (!('gpu' in navigator)) throw Error('当前浏览器没有 WebGPU')
+    gpu = await (navigator as any).gpu.requestAdapter()
+    if (!gpu) throw Error('无法获取 WebGPU adapter')
+    const info = gpu.info || {}
+    gpuStatus.textContent = `WebGPU 就绪 · ${info.vendor || 'unknown'} ${
+      info.architecture || ''
+    }`
   } catch (e: any) {
-    gpuStatus.textContent = e.message
-    gpuStatus.className = 'status bad'
+    gpuStatus.textContent = 'WebGPU 不可用：' + (e?.message || e)
   }
 })()
