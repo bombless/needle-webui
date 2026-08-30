@@ -2,12 +2,7 @@ import { Worker } from 'node:worker_threads'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-type Tool = {
-  name: string
-  description: string
-  parameters: Record<string, unknown>
-}
+import { EXAMPLE_TOOLS, EXAMPLE_PROMPT } from './example.js'
 
 type Args = {
   cact: string
@@ -17,23 +12,6 @@ type Args = {
   maxTokens: number
   providers: string[]
 }
-
-const EXAMPLE_TOOLS: Tool[] = [
-  {
-    name: 'set_lights',
-    description: '调节灯光',
-    parameters: {
-      type: 'object',
-      properties: {
-        room: { type: 'string' },
-        brightness: { type: 'integer', minimum: 0, maximum: 100 }
-      },
-      required: ['room', 'brightness']
-    }
-  }
-]
-
-const EXAMPLE_PROMPT = '调用 set_lights, 房间 1, 亮度 0'
 
 function value (argv: string[], name: string, fallback?: string) {
   const i = argv.indexOf(name)
