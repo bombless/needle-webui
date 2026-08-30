@@ -1,6 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { create, globals } from 'webgpu'
-import { infer, Model, Runtime } from './engine.js'
+import { inferFixed } from './infer.js'
+import { Model, Runtime } from './engine.js'
 
 Object.assign(globalThis, globals)
 
@@ -22,7 +23,7 @@ async function main () {
   const startedAt = performance.now()
   let layerEvents = 0
   try {
-    const result = await infer({
+    const result = await inferFixed({
       device,
       modelBuffer,
       prompt: workerData.prompt,
