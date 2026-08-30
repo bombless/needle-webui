@@ -11,12 +11,11 @@ async function main () {
   if (!adapter) throw new Error('无法获取 Node WebGPU adapter')
   const device = await adapter.requestDevice()
   const model = await import('node:fs/promises').then(fs => fs.readFile(workerData.cact))
-  const tools = JSON.parse(await import('node:fs/promises').then(fs => fs.readFile(workerData.tools, 'utf8')))
   const result = await infer({
     device,
     modelBuffer: model.buffer.slice(model.byteOffset, model.byteOffset + model.byteLength),
     prompt: workerData.prompt,
-    tools,
+    tools: workerData.tools,
     maxTokens: workerData.maxTokens
   })
   parentPort?.postMessage({ provider: workerData.provider, ok: true, result })
