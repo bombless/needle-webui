@@ -908,7 +908,7 @@ ${q}<|im_end|>\\
             i === 0 ? 'prefill' : 'forward'
           } · layer ${n}/${model!.g.num_layers} · ${
             ids.length + gen.length
-          } tokens · ${(ids.length / (elapsed / 1000)).toFixed(2)} tok/s · ${
+          } tokens · ${((i === 0 ? ids.length : 1) / (elapsed / 1000)).toFixed(2)} tok/s · ${
             counter.dispatches
           } shader dispatch · ${formatFlops(
             counter.flops
