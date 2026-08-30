@@ -1,3 +1,5 @@
+import {EXAMPLE_TOOLS, EXAMPLE_PROMPT} from './example'
+
 type T = {
   dtype: number
   shape: number[]
@@ -1042,24 +1044,11 @@ if (IS_BROWSER) $('query').addEventListener('keydown', e => {
 })
 if (IS_BROWSER) $('loadDemo').addEventListener('click', () => {
   $<HTMLTextAreaElement>('tools').value = JSON.stringify(
-    [
-      {
-        name: 'set_lights',
-        description: '调节灯光',
-        parameters: {
-          type: 'object',
-          properties: {
-            room: { type: 'string' },
-            brightness: { type: 'integer', minimum: 0, maximum: 100 }
-          },
-          required: ['room', 'brightness']
-        }
-      }
-    ],
+    EXAMPLE_TOOLS,
     null,
     2
   )
-  $<HTMLTextAreaElement>('query').value = '调用 set_lights, 房间 1, 亮度 0'
+  $<HTMLTextAreaElement>('query').value = EXAMPLE_PROMPT
   $<HTMLTextAreaElement>('query').focus()
 })
 if (IS_BROWSER) $('modelFile').addEventListener('change', async e => {
