@@ -61,12 +61,31 @@ async function args (argv: string[]): Promise<Args> {
   }
 }
 
+function formatFlopsPerSecond (n: number) {
+  if (n >= 1e15) return `${(n / 1e15).toFixed(2)} PFLOP/s`
+  if (n >= 1e12) return `${(n / 1e12).toFixed(2)} TFLOP/s`
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GFLOP/s`
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)} MFLOP/s`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(2)} KFLOP/s`
+  return `${Math.round(n)} FLOP/s`
+}
+
+function formatFlops (n: number) {
+  if (n >= 1e15) return `${(n / 1e15).toFixed(2)} PFLOPs`
+  if (n >= 1e12) return `${(n / 1e12).toFixed(2)} TFLOPs`
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GFLOPs`
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)} MFLOPs`
+  return `${Math.round(n)} FLOPs`
+}
+
 function runWorker (provider: string, a: Args) {
   return new Promise((resolveResult) => {
     const worker = new Worker(resolve(fileURLToPath(new URL('./cli-worker.ts', import.meta.url))), {
       workerData: { ...a, provider, dawnOptions: provider === 'webgpu' ? [] : [`backend=${provider}`] }
     })
     let settled = false
+    let lastProgressAt = 0
+    let lastPrintedToken = 0
     const finish = (result: unknown) => {
       if (settled) return
       settled = true
@@ -77,9 +96,24 @@ function runWorker (provider: string, a: Args) {
       worker.terminate()
       finish({ provider, ok: false, timeout: true, error: `超过 ${a.timeout} ms` })
     }, a.timeout)
-    worker.once('message', (message) => {
-      finish(message)
-      void worker.terminate()
+    worker.on('message', (message) => {
+      if (message?.type === 'progress') {
+        const now = Date.now()
+        if (now - lastProgressAt < 250 && message.generatedTokens === lastPrintedToken) return
+        lastProgressAt = now
+        lastPrintedToken = message.generatedTokens
+        process.stdout.write(
+          `[${provider}] 运行中 · 已生成 ${message.generatedTokens}/${a.maxTokens} token · ` +
+          `${formatFlopsPerSecond(message.flopsPerSecond)} · ` +
+          `${formatFlops(message.flops)} · layer ${message.layer}\n`
+        )
+        return
+      }
+      if (message?.type === 'result') {
+        finish(message)
+      } else {
+        finish(message)
+      }
     })
     worker.once('error', error => finish({ provider, ok: false, error: error.message }))
     worker.once('exit', code => {
