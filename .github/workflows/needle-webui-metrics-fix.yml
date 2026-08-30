@@ -20,7 +20,7 @@ jobs:
           from pathlib import Path
           p = Path('src/webgpu-main.ts')
           s = p.read_text()
-          old = '${ids.length / (elapsed / 1000)).toFixed(2)} tok/s'
+          old = '${(ids.length / (elapsed / 1000)).toFixed(2)} tok/s'
           new = '${((i === 0 ? ids.length : 1) / (elapsed / 1000)).toFixed(2)} tok/s'
           if old not in s:
               raise SystemExit('expected TPS expression not found')
