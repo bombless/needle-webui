@@ -25,8 +25,13 @@ let gpu: any = null,
   rt: Runtime | null = null,
   cancelled = false,
   cqNonFiniteScales = 0
-const DEBUG_LATENTS = new URLSearchParams(location.search).has('DEBUG_LATENTS')
-const msgs = $<HTMLDivElement>('messages')
+const IS_BROWSER = typeof document !== 'undefined'
+const DEBUG_LATENTS = IS_BROWSER && new URLSearchParams(location.search).has('DEBUG_LATENTS')
+const msgs = IS_BROWSER ? $<HTMLDivElement>('messages') : null
+const cancel = IS_BROWSER ? $<HTMLButtonElement>('cancel') : null
+const progress = IS_BROWSER ? $<HTMLDivElement>('progress') : null
+const metrics = IS_BROWSER ? $<HTMLDivElement>('metrics') : null
+const gpuStatus = IS_BROWSER ? $<HTMLDivElement>('gpuStatus') : null
 
 type Counters = { dispatches: number; flops: number; forwardMs: number }
 type Candidate = {
@@ -78,6 +83,7 @@ function dumpLatent (
     rms: Math.sqrt(sumsq / snapshot.length),
     values: snapshot
   }
+  if (!IS_BROWSER) return
   const w = window as any
   ;(w.__needleLatents || (w.__needleLatents = [])).push(record)
   console.log(`[latent] layer_${String(layer).padStart(2, '0')}`, {
@@ -653,8 +659,8 @@ async function generate (
     for (let l = 0; l < n; l++)
       x.set(E.subarray(tokens[t] * D, tokens[t] * D + D), (t * n + l) * D)
   if (DEBUG_LATENTS) {
-    ;(window as any).__needleLatents = []
-    console.log('[latent] enabled', {
+    if (IS_BROWSER) (window as any).__needleLatents = []
+    if (IS_BROWSER) console.log('[latent] enabled', {
       layers: L,
       d_model: D,
       mhc_lanes: n,
@@ -828,6 +834,39 @@ async function generate (
   return await r.mm(fn, 1, D, 0, g.vocab_size)
 }
 
+export { Model, Runtime, generate, topCandidates, type Counters }
+
+export async function infer (options: {
+  device: any
+  modelBuffer: ArrayBuffer
+  prompt: string
+  tools?: unknown
+  maxTokens?: number
+  onLayer?: (layer: number) => void
+}) {
+  const m = new Model(options.modelBuffer)
+  const r = new Runtime(options.device, m)
+  const tools = options.tools || []
+  const prompt = `<|im_start|>user\\\n<tools>${JSON.stringify(tools)}</tools>\\\n${options.prompt}<|im_end|>\\n<|im_start|>assistant\\n`
+  const ids = [2, ...m.tok.encode(prompt)]
+  const gen: number[] = []
+  const counter: Counters = { dispatches: 0, flops: 0, forwardMs: 0 }
+  const max = Math.max(1, options.maxTokens || 96)
+  for (let i = 0; i < max; i++) {
+    const started = performance.now()
+    const logits = await generate([...ids, ...gen], m, r, options.onLayer || (() => {}), counter)
+    counter.forwardMs += performance.now() - started
+    const best = topCandidates(logits, m.tok, 1)[0]
+    gen.push(best.id)
+    if (best.id === 1) break
+  }
+  const raw = m.tok.decode(gen)
+  const call = raw.match(/<tool_call>([\s\S]*?)<\/tool_call>/)
+  let text = raw
+  if (call) try { text = JSON.stringify(JSON.parse(call[1]), null, 2) } catch {}
+  return { text, raw, tokens: gen, stats: counter, weightBytes: r.weightBytes }
+}
+
 function formatBytes (n: number) {
   if (n >= 1073741824) return `${(n / 1073741824).toFixed(2)} GiB`
   if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MiB`
@@ -888,7 +927,7 @@ ${q}<|im_end|>\\
     counter: Counters = { dispatches: 0, flops: 0, forwardMs: 0 }
   cancelled = false
   runtime.counter = counter
-  cancel.disabled = false
+  cancel!.disabled = false
   showDebug(ids, [], [])
   try {
     let previous = performance.now()
@@ -900,11 +939,11 @@ ${q}<|im_end|>\\
         model,
         runtime,
         n => {
-          progress.textContent = `WebGPU Needle · layer ${n}/${
+          progress!.textContent = `WebGPU Needle · layer ${n}/${
             model!.g.num_layers
           }`
           const elapsed = Math.max(1, performance.now() - phaseStart)
-          metrics.textContent = `${
+          metrics!.textContent = `${
             i === 0 ? 'prefill' : 'forward'
           } · layer ${n}/${model!.g.num_layers} · ${
             ids.length + gen.length
@@ -937,7 +976,7 @@ ${q}<|im_end|>\\
       gen.push(best.id)
       showDebug(ids, gen, steps)
       assistant.textContent = model.tok.decode(gen) || '生成中…'
-      metrics.textContent = `${
+      metrics!.textContent = `${
         i === 0 ? '首 token prefill' : 'decode'
       } · 已生成 ${i + 1}/${max} · 当前 ${(1000 / Math.max(1, tokenMs)).toFixed(
         2
@@ -952,7 +991,7 @@ ${q}<|im_end|>\\
       let repeated = 1
       for (let j = gen.length - 2; j >= 0 && gen[j] === best.id; j--) repeated++
       if (repeated >= 8) {
-        metrics.textContent += ` · 重复 token ${model.tok.tokenLabel(
+        metrics!.textContent += ` · 重复 token ${ model.tok.tokenLabel(
           best.id
         )}，已自动停止`
         break
@@ -975,12 +1014,13 @@ ${q}<|im_end|>\\
     assistant.textContent = '推理失败：' + (e?.message || e)
   } finally {
     runtime.counter = null
-    cancel.disabled = true
-    progress.textContent = ''
+    cancel!.disabled = true
+    progress!.textContent = ''
     b.disabled = false
   }
 }
 function add (role: string, text: string) {
+  if (!msgs) return document.createElement('div')
   if (msgs.querySelector('.empty')) msgs.innerHTML = ''
   const e = document.createElement('div')
   e.className = `message ${role}`
@@ -989,18 +1029,18 @@ function add (role: string, text: string) {
   msgs.scrollTop = msgs.scrollHeight
   return e
 }
-$('send').addEventListener('click', run)
-cancel.addEventListener('click', () => {
+if (IS_BROWSER) $('send').addEventListener('click', run)
+if (IS_BROWSER) cancel!.addEventListener('click', () => {
   cancelled = true
-  metrics.textContent = '正在停止…'
+  metrics!.textContent = '正在停止…'
 })
-$('query').addEventListener('keydown', e => {
+if (IS_BROWSER) $('query').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     run()
   }
 })
-$('loadDemo').addEventListener('click', () => {
+if (IS_BROWSER) $('loadDemo').addEventListener('click', () => {
   $<HTMLTextAreaElement>('tools').value = JSON.stringify(
     [
       {
@@ -1022,7 +1062,7 @@ $('loadDemo').addEventListener('click', () => {
   $<HTMLTextAreaElement>('query').value = '调用 set_lights, 房间 1, 亮度 0'
   $<HTMLTextAreaElement>('query').focus()
 })
-$('modelFile').addEventListener('change', async e => {
+if (IS_BROWSER) $('modelFile').addEventListener('change', async e => {
   const f = (e.target as HTMLInputElement).files?.[0]
   if (!f) return
   $<HTMLDivElement>('modelInfo').textContent = '正在解析 CQ 权重并上传 GPU…'
@@ -1043,19 +1083,19 @@ $('modelFile').addEventListener('change', async e => {
     $<HTMLDivElement>('modelInfo').textContent = '加载失败：' + (e?.message || e)
   }
 })
-$('maxTokens').addEventListener('change', () => {})
-$('topK').addEventListener('change', () => {})
-;(async () => {
+if (IS_BROWSER) $('maxTokens').addEventListener('change', () => {})
+if (IS_BROWSER) $('topK').addEventListener('change', () => {})
+if (IS_BROWSER) (async () => {
   try {
     if (!('gpu' in navigator)) throw Error('当前浏览器没有 WebGPU')
     const adapter = await (navigator as any).gpu.requestAdapter()
     if (!adapter) throw Error('无法获取 WebGPU adapter')
     gpu = await adapter.requestDevice()
     const info = adapter.info || {}
-    gpuStatus.textContent = `WebGPU 就绪 · ${info.vendor || 'unknown'} ${
+    gpuStatus!.textContent = `WebGPU 就绪 · ${info.vendor || 'unknown'} ${
       info.architecture || ''
     }`
   } catch (e: any) {
-    gpuStatus.textContent = 'WebGPU 不可用：' + (e?.message || e)
+    gpuStatus!.textContent = 'WebGPU 不可用：' + (e?.message || e)
   }
 })()

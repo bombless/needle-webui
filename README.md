@@ -11,6 +11,22 @@ npm run dev
 
 打开 Vite 页面后选择由 `needle build` 生成的 `.cact` 文件，再输入请求。
 
+## Node.js CLI
+
+Node.js 使用 `webgpu`（Dawn）获取同一物理 GPU 的 WebGPU adapter；浏览器中的 `GPUDevice` 无法跨进程直接转移，因此 CLI worker 会各自创建兼容的 device。多个 provider 会并行运行，全部完成或超时后一次性打印 JSON 结果：
+
+```sh
+npm run cli -- --cact needle2.cact --tools tools.json --prompt "my prompt"
+```
+
+`--tools` 和 `--prompt` 都是可选的；省略时直接复用页面“填入示例工具”里的工具定义和请求：`set_lights`，提示词为 `调用 set_lights, 房间 1, 亮度 0`。因此最简调用为：
+
+```sh
+npm run cli -- --cact needle2.cact
+```
+
+可选参数：`--providers webgpu`（也可传逗号分隔的 Dawn backend，例如 `vulkan,d3d12`）、`--timeout 120000`、`--max-tokens 96`。注意 npm 参数需要放在第二个 `--` 之后。
+
 ## 实现说明
 
 - `.cact` 头、tensor directory、CQ2/CQ3/CQ4（以及 ternary record）解析参考 `cactus-compute/needle` 的 `needle/model/export.py`。
