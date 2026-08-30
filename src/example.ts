@@ -7,7 +7,7 @@ export type ExampleTool = {
 export const EXAMPLE_TOOLS: ExampleTool[] = [
   {
     name: 'set_lights',
-    description: '调节灯光',
+    description: 'set brightness',
     parameters: {
       type: 'object',
       properties: {
@@ -19,4 +19,4 @@ export const EXAMPLE_TOOLS: ExampleTool[] = [
   }
 ]
 
-export const EXAMPLE_PROMPT = '调用 set_lights, 房间 1, 亮度 0'
+export const EXAMPLE_PROMPT = 'turn brightness in room 1 to 0'
