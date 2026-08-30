@@ -1,5 +1,3 @@
-import {EXAMPLE_TOOLS, EXAMPLE_PROMPT} from './example'
-
 type T = {
   dtype: number
   shape: number[]
@@ -7,8 +5,6 @@ type T = {
   bits: number
   data: Uint8Array
 }
-const $ = <TEl extends HTMLElement>(id: string) =>
-  document.getElementById(id) as TEl
 const TAG = 0x05e12a83,
   H = 120,
   R = 44,
@@ -22,19 +18,7 @@ const TAG = 0x05e12a83,
   MAP_READ = 1,
   UNIFORM = 64,
   SHADER = 4
-let gpu: any = null,
-  model: Model | null = null,
-  rt: Runtime | null = null,
-  cancelled = false,
-  cqNonFiniteScales = 0
-const IS_BROWSER = typeof document !== 'undefined'
-const DEBUG_LATENTS = IS_BROWSER && new URLSearchParams(location.search).has('DEBUG_LATENTS')
-const msgs = IS_BROWSER ? $<HTMLDivElement>('messages') : null
-const cancel = IS_BROWSER ? $<HTMLButtonElement>('cancel') : null
-const progress = IS_BROWSER ? $<HTMLDivElement>('progress') : null
-const metrics = IS_BROWSER ? $<HTMLDivElement>('metrics') : null
-const gpuStatus = IS_BROWSER ? $<HTMLDivElement>('gpuStatus') : null
-
+let cqNonFiniteScales = 0
 type Counters = { dispatches: number; flops: number; forwardMs: number }
 type Candidate = {
   id: number
@@ -56,46 +40,6 @@ function dtypeName (dtype: number) {
     : dtype === RAW
     ? 'RAW'
     : `dtype ${dtype}`
-}
-function dumpLatent (
-  layer: number,
-  x: Float32Array,
-  N: number,
-  lanes: number,
-  D: number
-) {
-  if (!DEBUG_LATENTS) return
-  const snapshot = x.slice()
-  let min = Infinity,
-    max = -Infinity,
-    sum = 0,
-    sumsq = 0
-  for (const v of snapshot) {
-    min = Math.min(min, v)
-    max = Math.max(max, v)
-    sum += v
-    sumsq += v * v
-  }
-  const record = {
-    layer,
-    shape: [N, lanes, D],
-    min,
-    max,
-    mean: sum / snapshot.length,
-    rms: Math.sqrt(sumsq / snapshot.length),
-    values: snapshot
-  }
-  if (!IS_BROWSER) return
-  const w = window as any
-  ;(w.__needleLatents || (w.__needleLatents = [])).push(record)
-  console.log(`[latent] layer_${String(layer).padStart(2, '0')}`, {
-    layer,
-    shape: record.shape,
-    min,
-    max,
-    mean: record.mean,
-    rms: record.rms
-  })
 }
 function hf (x: number) {
   const s = x >>> 15,
@@ -611,9 +555,10 @@ async function generate (
   m: Model,
   r: Runtime,
   step: (n: number) => void,
-  c: Counters
+  c: Counters,
+  isCancelled: () => boolean = () => false
 ) {
-  if (cancelled) throw Error('推理已停止')
+  if (isCancelled()) throw Error('推理已停止')
   const g = m.g,
     D = g.d_model,
     Hd = g.head_dim,
@@ -660,17 +605,8 @@ async function generate (
   for (let t = 0; t < N; t++)
     for (let l = 0; l < n; l++)
       x.set(E.subarray(tokens[t] * D, tokens[t] * D + D), (t * n + l) * D)
-  if (DEBUG_LATENTS) {
-    if (IS_BROWSER) (window as any).__needleLatents = []
-    if (IS_BROWSER) console.log('[latent] enabled', {
-      layers: L,
-      d_model: D,
-      mhc_lanes: n,
-      tokens: N
-    })
-  }
   for (let l = 0; l < L; l++) {
-    if (cancelled) throw Error('推理已停止')
+    if (isCancelled()) throw Error('推理已停止')
     const z = x.slice(),
       nx = new Float32Array(z.length)
     for (let t = 0; t < N; t++) {
@@ -823,7 +759,6 @@ async function generate (
           x[(t * n + i) * D + d] = v + post * (block[t * D + d] - un[t * D + d])
         }
     }
-    dumpLatent(l, x, N, n, D)
     step(l + 1)
   }
   const last = new Float32Array(D)
@@ -869,17 +804,6 @@ export async function infer (options: {
   return { text, raw, tokens: gen, stats: counter, weightBytes: r.weightBytes }
 }
 
-function formatBytes (n: number) {
-  if (n >= 1073741824) return `${(n / 1073741824).toFixed(2)} GiB`
-  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MiB`
-  return `${Math.round(n / 1024)} KiB`
-}
-function formatFlops (n: number) {
-  if (n >= 1e12) return `${(n / 1e12).toFixed(2)}T`
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}G`
-  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
-  return `${Math.round(n)}`
-}
 function topCandidates (logits: Float32Array, tok: Tok, k: number): Candidate[] {
   const bad = firstNonFinite(logits)
   if (bad >= 0)
@@ -898,6 +822,7 @@ function topCandidates (logits: Float32Array, tok: Tok, k: number): Candidate[] 
     probability: Math.exp(logits[id] - max) / sum
   }))
 }
+/*
 function showDebug (promptIds: number[], generated: number[], steps: unknown[]) {
   $<HTMLPreElement>('debugPrompt').textContent = JSON.stringify(promptIds)
   $<HTMLPreElement>('debugGenerated').textContent = JSON.stringify(generated)
@@ -1088,3 +1013,4 @@ if (IS_BROWSER) (async () => {
     gpuStatus!.textContent = 'WebGPU 不可用：' + (e?.message || e)
   }
 })()
+*/
