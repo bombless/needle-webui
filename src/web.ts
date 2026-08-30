@@ -1,5 +1,6 @@
 import { EXAMPLE_TOOLS, EXAMPLE_PROMPT } from './example.js'
 import { Model, Runtime, generate, topCandidates, type Counters } from './engine.js'
+import { buildPrompt } from './prompt.js'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 let gpu: any = null
@@ -42,11 +43,7 @@ async function run () {
   add('user', query)
   const assistant = add('assistant', '生成中…')
   const tools = JSON.parse($<HTMLTextAreaElement>('tools').value || '[]')
-  const prompt = `<|im_start|>user\\
-<tools>${JSON.stringify(tools)}</tools>\\
-${query}<|im_end|>\\
-<|im_start|>assistant\\
-`
+  const prompt = buildPrompt(tools, query)
   const ids = [2, ...model.tok.encode(prompt)]
   const generated: number[] = []
   const steps: unknown[] = []
