@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { create, globals } from 'webgpu'
-import { infer, Model, Runtime } from './webgpu-main.js'
+import { infer, Model, Runtime } from './engine.js'
 
 Object.assign(globalThis, globals)
 

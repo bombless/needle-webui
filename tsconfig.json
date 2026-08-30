@@ -1,1 +1,1 @@
-{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","strict":true,"noEmit":true,"lib":["ES2022","DOM","DOM.Iterable"]},"include":["src/webgpu-main.ts","src/cli.ts","src/cli-worker.ts"]}
+{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","strict":true,"noEmit":true,"lib":["ES2022","DOM","DOM.Iterable"]},"include":["src/engine.ts","src/cli.ts","src/cli-worker.ts"]}
