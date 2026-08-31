@@ -12,6 +12,7 @@ type Args = {
   timeout: number
   maxTokens: number
   providers: string[]
+  dumpPrefill: boolean
 }
 
 function value (argv: string[], name: string, fallback?: string) {
@@ -58,7 +59,8 @@ async function args (argv: string[]): Promise<Args> {
     prompt,
     timeout: Number(value(argv, '--timeout', '120000')),
     maxTokens: Number(value(argv, '--max-tokens', '96')),
-    providers
+    providers,
+    dumpPrefill: argv.includes('--dump-prefill')
   }
 }
 
@@ -129,3 +131,4 @@ try {
   console.error(error instanceof Error ? error.message : String(error))
   process.exitCode = 2
 }
+
