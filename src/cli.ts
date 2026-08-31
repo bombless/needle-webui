@@ -1,11 +1,12 @@
-import { Worker } from 'node:worker_threads'
-import { readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+﻿import { Worker } from 'node:worker_threads'
+import { readFile, access } from 'node:fs/promises'
+import { resolve, dirname, basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EXAMPLE_TOOLS, EXAMPLE_PROMPT } from './example.js'
 
 type Args = {
-  cact: string
+  cact?: string
+  pkl?: string
   tools: unknown
   prompt: string
   timeout: number
@@ -18,11 +19,26 @@ function value (argv: string[], name: string, fallback?: string) {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback
 }
 
-async function args (argv: string[]): Promise<Args> {
-  const cact = value(argv, '--cact', value(argv, '--model'))
-  if (!cact)
-    throw new Error('用法: npm run cli -- --cact model.cact [--jax] [--tools tools.json] [--prompt "text"]')
+async function findTokenizer (pkl: string) {
+  const stem = basename(pkl, extname(pkl))
+  const candidates = [
+    join(dirname(pkl), `${stem}.cact`),
+    resolve(`${stem}.cact`),
+    resolve('needle2.cact')
+  ]
+  for (const candidate of candidates) {
+    try { await access(candidate); return candidate } catch {}
+  }
+  throw new Error(`--pkl 需要 tokenizer；未找到 ${stem}.cact，请同时指定 --cact tokenizer.cact`)
+}
 
+async function args (argv: string[]): Promise<Args> {
+  const pkl = value(argv, '--pkl')
+  const cactArg = value(argv, '--cact', value(argv, '--model'))
+  if (!pkl && !cactArg)
+    throw new Error('用法: npm run cli -- --cact model.cact [--jax] 或 npm run cli -- --jax --pkl model.pkl')
+
+  const cact = pkl ? await findTokenizer(resolve(pkl)) : resolve(cactArg!)
   const toolsPath = value(argv, '--tools')
   const tools = toolsPath
     ? JSON.parse(await readFile(resolve(toolsPath), 'utf8'))
@@ -32,8 +48,12 @@ async function args (argv: string[]): Promise<Args> {
     ? ['jax']
     : (value(argv, '--providers', 'webgpu') || 'webgpu').split(',').map(x => x.trim()).filter(Boolean)
 
+  if (pkl && !argv.includes('--jax'))
+    throw new Error('--pkl 目前只支持 --jax')
+
   return {
-    cact: resolve(cact),
+    cact,
+    pkl: pkl ? resolve(pkl) : undefined,
     tools,
     prompt,
     timeout: Number(value(argv, '--timeout', '120000')),
@@ -75,7 +95,7 @@ function runWorker (provider: string, a: Args) {
     }
     const timer = setTimeout(() => {
       worker.terminate()
-      finish({ provider, ok: false, timeout: true, error: `超过 ${a.timeout} ms` })
+      finish({ provider, ok: false, timeout: true, error: `timeout ${a.timeout} ms` })
     }, a.timeout)
     worker.on('message', (message) => {
       if (message?.type === 'progress') {
@@ -90,11 +110,8 @@ function runWorker (provider: string, a: Args) {
         )
         return
       }
-      if (message?.type === 'result') {
-        finish(message)
-      } else {
-        finish(message)
-      }
+      if (message?.type === 'result') finish(message)
+      else finish(message)
     })
     worker.once('error', error => finish({ provider, ok: false, error: error.message }))
     worker.once('exit', code => {
