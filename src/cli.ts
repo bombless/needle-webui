@@ -21,13 +21,16 @@ function value (argv: string[], name: string, fallback?: string) {
 async function args (argv: string[]): Promise<Args> {
   const cact = value(argv, '--cact', value(argv, '--model'))
   if (!cact)
-    throw new Error('用法: npm run cli -- --cact model.cact [--tools tools.json] [--prompt "text"]')
+    throw new Error('用法: npm run cli -- --cact model.cact [--jax] [--tools tools.json] [--prompt "text"]')
 
   const toolsPath = value(argv, '--tools')
   const tools = toolsPath
     ? JSON.parse(await readFile(resolve(toolsPath), 'utf8'))
     : EXAMPLE_TOOLS
   const prompt = value(argv, '--prompt', EXAMPLE_PROMPT)!
+  const providers = argv.includes('--jax')
+    ? ['jax']
+    : (value(argv, '--providers', 'webgpu') || 'webgpu').split(',').map(x => x.trim()).filter(Boolean)
 
   return {
     cact: resolve(cact),
@@ -35,7 +38,7 @@ async function args (argv: string[]): Promise<Args> {
     prompt,
     timeout: Number(value(argv, '--timeout', '120000')),
     maxTokens: Number(value(argv, '--max-tokens', '96')),
-    providers: (value(argv, '--providers', 'webgpu') || 'webgpu').split(',').map(x => x.trim()).filter(Boolean)
+    providers
   }
 }
 
