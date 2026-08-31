@@ -45,7 +45,7 @@ async function runJax () {
   }
 
   const raw = m.tok.decode(gen)
-  const call = raw.match(/<tool_call>([\\s\\S]*?)<\\/tool_call>/)
+  const call = raw.match(/<tool_call>([\s\S]*?)<\/tool_call>/)
   let text = raw
   if (call) try { text = JSON.stringify(JSON.parse(call[1]), null, 2) } catch {}
   return {
