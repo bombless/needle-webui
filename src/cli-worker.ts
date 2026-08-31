@@ -20,12 +20,12 @@ async function runJax () {
   const counter: Counters = { dispatches: 0, flops: 0, forwardMs: 0 }
   r.counter = counter
   const tools = workerData.tools || []
-  const prompt = `<|im_start|>user\\n<tools>${JSON.stringify(tools)}</tools>\\n${workerData.prompt}<|im_end|>\\n<|im_start|>assistant\\n`
+  const prompt = '<|im_start|>user\n<tools>' + JSON.stringify(tools) + '</tools>\n' + workerData.prompt + '<|im_end|>\n<|im_start|>assistant\n'
   const ids = [2, ...m.tok.encode(prompt)]
   if (workerData.dumpPrefill) {
     console.log('=== PREFILL BEGIN ===')
     console.log(prompt)
-    console.log(prefill tokens (): )
+    console.log(`prefill tokens (${ids.length}):`, JSON.stringify(ids))
     console.log('=== PREFILL END ===')
   }
   const gen: number[] = []
@@ -83,4 +83,6 @@ async function runWebgpu () {
 }
 
 ;(workerData.provider === 'jax' ? runJax() : runWebgpu()).then(result => parentPort?.postMessage({ type: 'result', ...result })).catch(error => parentPort?.postMessage({ type: 'result', provider: workerData.provider, ok: false, error: error instanceof Error ? error.message : String(error) }))
+
+
 
