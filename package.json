@@ -16,6 +16,7 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
+    "@jax-js/jax": "^0.1.23",
     "webgpu": "^0.5.0"
   }
 }

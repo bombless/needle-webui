@@ -1,10 +1,11 @@
 import { EXAMPLE_TOOLS, EXAMPLE_PROMPT } from './example.js'
 import { Model, Runtime, generate, topCandidates, type Counters } from './engine.js'
+import { JaxRuntime } from './jax-runtime.js'
 
-const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
+const $ = <T extends HTMLElement> (id: string) => document.getElementById(id) as T
 let gpu: any = null
 let model: Model | null = null
-let runtime: Runtime | null = null
+let runtime: any = null
 let cancelled = false
 
 function formatBytes (n: number) {
@@ -17,6 +18,13 @@ function formatFlops (n: number) {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)}G`
   if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
   return `${Math.round(n)}`
+}
+function backendName () {
+  return $<HTMLSelectElement>('backend').value === 'webgpu' ? 'WebGPU' : (runtime?.mode ? `jax-js (${runtime.mode})` : 'jax-js')
+}
+function setBackendInfo (text: string) {
+  $<HTMLDivElement>('backendInfo').textContent = text
+  $<HTMLSpanElement>('backendFooter').textContent = `${backendName()} · CQ 权重解码 · greedy decoding`
 }
 function add (role: string, text: string) {
   const messages = $<HTMLDivElement>('messages')
@@ -33,6 +41,25 @@ function showDebug (promptIds: number[], generated: number[], steps: unknown[]) 
   $<HTMLPreElement>('debugGenerated').textContent = JSON.stringify(generated)
   $<HTMLPreElement>('debugSteps').textContent = JSON.stringify(steps, null, 2)
 }
+async function makeRuntime () {
+  if (!model) return null
+  if ($<HTMLSelectElement>('backend').value === 'webgpu') {
+    if (!gpu) throw Error('WebGPU 不可用，请切换到 jax-js')
+    return new Runtime(gpu, model)
+  }
+  return JaxRuntime.create(model, 'webgpu')
+}
+async function reloadRuntime () {
+  if (!model) return
+  const backend = $<HTMLSelectElement>('backend')
+  backend.disabled = true
+  try {
+    runtime = await makeRuntime()
+    setBackendInfo(runtime?.mode ? `jax-js 使用 ${runtime.mode} backend。` : '使用现有 WebGPU compute shader。')
+    const file = $<HTMLInputElement>('modelFile').files?.[0]
+    $<HTMLDivElement>('modelInfo').textContent = `${file?.name || 'model'} · ${model.g.d_model}d · ${model.g.num_layers} 层 · ${model.t.length} tensors · 运行时权重 ${formatBytes(runtime.weightBytes)}`
+  } finally { backend.disabled = false }
+}
 async function run () {
   const query = $<HTMLTextAreaElement>('query').value.trim()
   if (!query || !model || !runtime) return
@@ -42,11 +69,7 @@ async function run () {
   add('user', query)
   const assistant = add('assistant', '生成中…')
   const tools = JSON.parse($<HTMLTextAreaElement>('tools').value || '[]')
-  const prompt = `<|im_start|>user\\
-<tools>${JSON.stringify(tools)}</tools>\\
-${query}<|im_end|>\\
-<|im_start|>assistant\\
-`
+  const prompt = `<|im_start|>user\\\n<tools>${JSON.stringify(tools)}</tools>\\\n${query}<|im_end|>\\\n<|im_start|>assistant\\\n`
   const ids = [2, ...model.tok.encode(prompt)]
   const generated: number[] = []
   const steps: unknown[] = []
@@ -57,13 +80,14 @@ ${query}<|im_end|>\\
   cancelled = false
   currentRuntime.counter = counter
   $<HTMLButtonElement>('cancel').disabled = false
+  $<HTMLSelectElement>('backend').disabled = true
   showDebug(ids, [], [])
   try {
     let previous = performance.now()
     for (let i = 0; i < max; i++) {
       const forwardStart = performance.now()
       const logits = await generate([...ids, ...generated], model, currentRuntime, layer => {
-        $<HTMLDivElement>('progress').textContent = `WebGPU Needle · layer ${layer}/${model!.g.num_layers}`
+        $<HTMLDivElement>('progress').textContent = `${backendName()} Needle · layer ${layer}/${model!.g.num_layers}`
       }, counter, () => cancelled)
       const now = performance.now()
       const candidates = topCandidates(logits, model.tok, k)
@@ -73,7 +97,7 @@ ${query}<|im_end|>\\
       generated.push(best.id)
       showDebug(ids, generated, steps)
       assistant.textContent = model.tok.decode(generated) || '生成中…'
-      $<HTMLDivElement>('metrics').textContent = `${i === 0 ? '首 token prefill' : 'decode'} · 已生成 ${i + 1}/${max} · 当前 ${(1000 / Math.max(1, now - previous)).toFixed(2)} tok/s · 总 ${(generated.length / (Math.max(1, now - started) / 1000)).toFixed(2)} tok/s · ${counter.dispatches} shader dispatch · ${formatFlops(counter.flops)} FLOPs · 显存 ${formatBytes(currentRuntime.peakBytes)}（权重 ${formatBytes(currentRuntime.weightBytes)}）`
+      $<HTMLDivElement>('metrics').textContent = `${i === 0 ? '首 token prefill' : 'decode'} · 已生成 ${i + 1}/${max} · 当前 ${(1000 / Math.max(1, now - previous)).toFixed(2)} tok/s · 总 ${(generated.length / (Math.max(1, now - started) / 1000)).toFixed(2)} tok/s · ${counter.dispatches} GEMM dispatch · ${formatFlops(counter.flops)} FLOPs · 显存 ${formatBytes(currentRuntime.peakBytes)}（权重 ${formatBytes(currentRuntime.weightBytes)}）`
       previous = now
       if (best.id === 1) break
       let repeated = 1
@@ -85,13 +109,14 @@ ${query}<|im_end|>\\
     let output = text
     if (call) try { output = JSON.stringify(JSON.parse(call[1]), null, 2) } catch {}
     assistant.textContent = output || '(empty; see token diagnostics)'
-    $<HTMLSpanElement>('timing').textContent = `· ${Math.round(performance.now() - started)} ms · WebGPU`
+    $<HTMLSpanElement>('timing').textContent = `· ${Math.round(performance.now() - started)} ms · ${backendName()}`
   } catch (error: any) {
     assistant.textContent = '推理失败：' + (error?.message || error)
     showDebug(ids, generated, steps)
   } finally {
     currentRuntime.counter = null
     $<HTMLButtonElement>('cancel').disabled = true
+    $<HTMLSelectElement>('backend').disabled = false
     $<HTMLDivElement>('progress').textContent = ''
     send.disabled = false
   }
@@ -107,14 +132,27 @@ $('loadDemo').addEventListener('click', () => {
   $<HTMLTextAreaElement>('query').value = EXAMPLE_PROMPT
   $<HTMLTextAreaElement>('query').focus()
 })
+$('backend').addEventListener('change', async () => {
+  if (!model) {
+    setBackendInfo($<HTMLSelectElement>('backend').value === 'webgpu' ? '默认使用现有 WebGPU GEMM。' : '将使用 jax-js；优先 WebGPU，不可用时回退 WASM。')
+    return
+  }
+  try {
+    $<HTMLDivElement>('backendInfo').textContent = '正在初始化计算后端…'
+    await reloadRuntime()
+  } catch (error: any) {
+    $<HTMLDivElement>('backendInfo').textContent = '后端切换失败：' + (error?.message || error)
+  }
+})
 $('modelFile').addEventListener('change', async event => {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file) return
-  $<HTMLDivElement>('modelInfo').textContent = '正在解析 CQ 权重并上传 GPU…'
+  $<HTMLDivElement>('modelInfo').textContent = '正在解析 CQ 权重并初始化计算后端…'
   try {
     model = new Model(await file.arrayBuffer())
-    runtime = new Runtime(gpu, model)
-    $<HTMLDivElement>('modelInfo').textContent = `${file.name} · ${model.g.d_model}d · ${model.g.num_layers} 层 · ${model.t.length} tensors · 文件权重 ${formatBytes(model.t.reduce((sum, tensor) => sum + tensor.data.byteLength, 0))} · GPU ${formatBytes(runtime.weightBytes)}`
+    runtime = await makeRuntime()
+    setBackendInfo(runtime?.mode ? `jax-js 使用 ${runtime.mode} backend。` : '使用现有 WebGPU compute shader。')
+    $<HTMLDivElement>('modelInfo').textContent = `${file.name} · ${model.g.d_model}d · ${model.g.num_layers} 层 · ${model.t.length} tensors · 运行时权重 ${formatBytes(runtime.weightBytes)}`
   } catch (error: any) {
     model = null; runtime = null
     $<HTMLDivElement>('modelInfo').textContent = '加载失败：' + (error?.message || error)
@@ -129,7 +167,11 @@ void (async () => {
     gpu = await adapter.requestDevice()
     const info = adapter.info || {}
     $<HTMLDivElement>('gpuStatus').textContent = `WebGPU 就绪 · ${info.vendor || 'unknown'} ${info.architecture || ''}`
+    $<HTMLDivElement>('gpuStatus').classList.add('ok')
   } catch (error: any) {
-    $<HTMLDivElement>('gpuStatus').textContent = 'WebGPU 不可用：' + (error?.message || error)
+    $<HTMLDivElement>('gpuStatus').textContent = 'WebGPU 不可用：' + (error?.message || error) + '；仍可使用 jax-js/WASM'
+    $<HTMLDivElement>('gpuStatus').classList.add('bad')
+    $<HTMLSelectElement>('backend').value = 'jax-js'
+    setBackendInfo('WebGPU 不可用时，jax-js 会自动使用 WASM。')
   }
 })()
