@@ -2,88 +2,120 @@ import { init, defaultDevice, numpy as np, type Device } from '@jax-js/jax'
 import type { Counters } from './engine.js'
 
 type BackendMode = 'webgpu' | 'wasm'
+type Tensor = { dtype: number; shape: number[]; group: number; bits: number; data: Uint8Array }
 
-/**
- * Runtime adapter for jax-js. The model parser and the rest of the Needle
- * implementation stay unchanged; only GEMM is delegated to jax-js.
- *
- * jax-js owns its device buffers, so this deliberately converts the existing
- * Float32Array weights/activations at the GEMM boundary. This keeps the
- * existing custom WebGPU runtime available for A/B comparison.
- */
+function hf (x: number) {
+  const s = x >>> 15, e = (x >>> 10) & 31, f = x & 1023
+  if (!e) return ((s ? -1 : 1) * Math.pow(2, -14) * f) / 1024
+  return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024)
+}
+function hfIeee (x: number) {
+  const s = x >>> 15, e = (x >>> 10) & 31, f = x & 1023
+  if (!e) return ((s ? -1 : 1) * Math.pow(2, -14) * f) / 1024
+  if (e === 31) return f ? NaN : (s ? -1 : 1) * Infinity
+  return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024)
+}
+function fwht (a: Float32Array) {
+  for (let n = 1; n < a.length; n <<= 1)
+    for (let i = 0; i < a.length; i += n << 1)
+      for (let j = 0; j < n; j++) {
+        const x = a[i + j], y = a[i + j + n]
+        a[i + j] = x + y
+        a[i + j + n] = x - y
+      }
+  const q = 1 / Math.sqrt(a.length)
+  for (let i = 0; i < a.length; i++) a[i] *= q
+}
+function unpack (t: Tensor, row: number, inPad: number, rowBytes: number) {
+  const b = t.bits, out = new Uint8Array(inPad)
+  if (b === 5) {
+    const off = row * rowBytes
+    for (let i = 0; i < inPad; i++) {
+      const c = (t.data[off + (i >> 2)] >> ((i & 3) * 2)) & 3
+      out[i] = c === 3 ? 0 : c + 1
+    }
+    return out
+  }
+  const off = row * rowBytes, mask = (1 << b) - 1
+  for (let i = 0; i < inPad; i++) {
+    const bit = i * b, bi = off + (bit >> 3), sh = bit & 7
+    let v = t.data[bi] >> sh
+    if (sh + b > 8) v |= t.data[bi + 1] << (8 - sh)
+    out[i] = v & mask
+  }
+  return out
+}
+function decodeCq (t: Tensor, cb: Float32Array) {
+  const out = t.shape[0], dim = t.shape[1], g = t.group || 128, b = t.bits
+  const inPad = Math.ceil(dim / g) * g
+  const rb = b === 5 ? inPad / 4 : (inPad * b) / 8
+  const groups = inPad / g, rowBytes = rb + groups * 2
+  const dst = new Float32Array(out * dim)
+  const code = b === 2 ? cb.subarray(0, 4) : b === 3 ? cb.subarray(4, 12) : b === 4 ? cb.subarray(12, 28) : new Float32Array([-1.2240064, 0, 1.2240064].map(v => v / Math.sqrt(g)))
+  const dv = new DataView(t.data.buffer, t.data.byteOffset, t.data.byteLength), tmp = new Float32Array(g)
+  for (let r = 0; r < out; r++) {
+    const ids = unpack(t, r, inPad, rowBytes), rowOffset = r * rowBytes
+    for (let q = 0; q < groups; q++) {
+      const scale = hf(dv.getUint16(rowOffset + rb + q * 2, true))
+      if (!Number.isFinite(scale)) { tmp.fill(0); continue }
+      for (let j = 0; j < g; j++) tmp[j] = (code[ids[q * g + j]] || 0) * scale
+      fwht(tmp)
+      for (let j = 0; j < g && q * g + j < dim; j++) dst[r * dim + q * g + j] = tmp[j]
+    }
+  }
+  return dst
+}
+
+function decodeWeights (m: any) {
+  return m.t.filter((t: Tensor) => t.dtype !== 4).map((t: Tensor) => {
+    if (t.dtype === 1) {
+      const d = new DataView(t.data.buffer, t.data.byteOffset, t.data.byteLength)
+      const a = new Float32Array(t.data.byteLength / 2)
+      for (let i = 0; i < a.length; i++) a[i] = hfIeee(d.getUint16(i * 2, true))
+      return a
+    }
+    if (t.dtype === 2) return new Float32Array(t.data.buffer, t.data.byteOffset, t.data.byteLength / 4).slice()
+    return decodeCq(t, m.cb)
+  })
+}
+
+/** jax-js implementation of the same Runtime.mm contract used by Needle. */
 export class JaxRuntime {
   m: any
-  w: Float32Array[] = []
+  w: Float32Array[]
   counter: Counters | null = null
   weightBytes = 0
   peakBytes = 0
   mode: BackendMode
 
-  private constructor (m: any, mode: BackendMode) {
-    this.m = m
-    this.mode = mode
-    for (const t of m.t.filter((x: any) => x.dtype !== 4)) {
-      let a: Float32Array
-      if (t.dtype === 1) {
-        const d = new DataView(t.data.buffer, t.data.byteOffset, t.data.byteLength)
-        a = new Float32Array(t.data.byteLength / 2)
-        for (let i = 0; i < a.length; i++) {
-          const bits = d.getUint16(i * 2, true)
-          const s = bits >>> 15
-          const e = (bits >>> 10) & 31
-          const f = bits & 1023
-          a[i] = !e
-            ? ((s ? -1 : 1) * Math.pow(2, -14) * f) / 1024
-            : (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024)
-        }
-      } else if (t.dtype === 2) {
-        a = new Float32Array(t.data.buffer, t.data.byteOffset, t.data.byteLength / 4).slice()
-      } else {
-        // CQ tensors are already decoded by the same helper used by Runtime.
-        // The model constructor keeps a private decoder, so reuse Runtime once
-        // in the factory below instead of duplicating CQ decoding here.
-        throw Error('JaxRuntime requires decoded model weights')
-      }
-      this.w.push(a)
-      this.weightBytes += a.byteLength
-    }
+  private constructor (m: any, weights: Float32Array[], mode: BackendMode) {
+    this.m = m; this.w = weights; this.mode = mode
+    this.weightBytes = weights.reduce((n, x) => n + x.byteLength, 0)
     this.peakBytes = this.weightBytes
   }
 
-  static async create (m: any, decodedWeights: Float32Array[], preferred: BackendMode = 'webgpu') {
+  static async create (m: any, preferred: BackendMode = 'webgpu') {
     let mode = preferred
+    const wanted: Device = preferred === 'webgpu' ? 'webgpu' : 'wasm'
     try {
-      const wanted: Device = preferred === 'webgpu' ? 'webgpu' : 'wasm'
       const available = await init(wanted)
       if (!available.includes(wanted)) {
-        if (preferred === 'webgpu') {
-          const fallback = await init('wasm')
-          if (!fallback.includes('wasm')) throw Error('jax-js 没有可用 backend')
-          mode = 'wasm'
-        } else {
-          throw Error('jax-js WASM backend 不可用')
-        }
+        if (preferred !== 'webgpu') throw Error('jax-js WASM backend 不可用')
+        const fallback = await init('wasm')
+        if (!fallback.includes('wasm')) throw Error('jax-js 没有可用 backend')
+        mode = 'wasm'
       }
       defaultDevice(mode)
     } catch (error) {
       throw Error(`jax-js 初始化失败：${(error as Error)?.message || error}`)
     }
-
-    const r = Object.create(JaxRuntime.prototype) as JaxRuntime
-    r.m = m
-    r.mode = mode
-    r.w = decodedWeights
-    r.weightBytes = decodedWeights.reduce((n, x) => n + x.byteLength, 0)
-    r.peakBytes = r.weightBytes
-    r.counter = null
-    return r
+    return new JaxRuntime(m, decodeWeights(m), mode)
   }
 
   async mm (a: Float32Array, m: number, k: number, wi: number, n: number) {
     this.counter && (this.counter.dispatches++, (this.counter.flops += 2 * m * k * n))
     const aa = np.array(a).reshape([m, k])
     const bb = np.array(this.w[wi]).reshape([n, k])
-    // Needle's weights are [out, in], so this is A @ B^T.
     const yy = np.einsum('mk,nk->mn', aa, bb)
     const data = await yy.data()
     const out = new Float32Array(data)
