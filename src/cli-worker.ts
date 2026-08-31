@@ -1,10 +1,14 @@
 import { parentPort, workerData } from 'node:worker_threads'
-import { infer, Model, generate, topCandidates, type Counters } from './engine.js'
+import { infer, Model, generate, topCandidates, Runtime, type Counters } from './engine.js'
 import { JaxRuntime } from './jax-runtime.js'
 
-async function runJax () {
+async function readModel () {
   const model = await import('node:fs/promises').then(fs => fs.readFile(workerData.cact))
-  const modelBuffer = model.buffer.slice(model.byteOffset, model.byteOffset + model.byteLength)
+  return model.buffer.slice(model.byteOffset, model.byteOffset + model.byteLength)
+}
+
+async function runJax () {
+  const modelBuffer = await readModel()
   const m = new Model(modelBuffer)
   const r = await JaxRuntime.create(m)
   const counter: Counters = { dispatches: 0, flops: 0, forwardMs: 0 }
@@ -20,22 +24,16 @@ async function runJax () {
   for (let i = 0; i < max; i++) {
     const forwardStarted = performance.now()
     const logits = await generate(
-      [...ids, ...gen],
-      m,
-      r as any,
+      [...ids, ...gen], m, r as any,
       (layer) => {
         layerEvents++
         const numLayers = m.g.num_layers as number
         const generatedTokens = Math.floor((layerEvents - 1) / numLayers) + 1
         const elapsedMs = Math.max(1, performance.now() - startedAt)
         parentPort?.postMessage({
-          type: 'progress',
-          provider: `jax-js:${r.mode}`,
-          layer,
-          generatedTokens,
+          type: 'progress', provider: `jax-js:${r.mode}`, layer, generatedTokens,
           flops: counter.flops,
-          flopsPerSecond: counter.flops / (elapsedMs / 1000),
-          elapsedMs
+          flopsPerSecond: counter.flops / (elapsedMs / 1000), elapsedMs
         })
       },
       counter
@@ -51,15 +49,12 @@ async function runJax () {
   let text = raw
   if (call) try { text = JSON.stringify(JSON.parse(call[1]), null, 2) } catch {}
   return {
-    provider: `jax-js:${r.mode}`,
-    ok: true,
+    provider: `jax-js:${r.mode}`, ok: true,
     result: { text, raw, tokens: gen, stats: counter, weightBytes: r.weightBytes }
   }
 }
 
-async function run () {
-  if (workerData.provider === 'jax') return runJax()
-
+async function runWebgpu () {
   const { create, globals } = await import('webgpu')
   Object.assign(globalThis, globals)
   const api = create(workerData.dawnOptions || [])
@@ -67,30 +62,41 @@ async function run () {
   const adapter = await gpu.gpu.requestAdapter({ powerPreference: 'high-performance' })
   if (!adapter) throw new Error('无法获取 Node WebGPU adapter')
   const device = await adapter.requestDevice()
-  return infer({
-    device,
-    modelBuffer: await import('node:fs/promises').then(fs => fs.readFile(workerData.cact).then(model => model.buffer.slice(model.byteOffset, model.byteOffset + model.byteLength))),
-    prompt: workerData.prompt,
-    tools: workerData.tools,
-    maxTokens: workerData.maxTokens,
-    onLayer: (layer) => {
-      const now = Date.now()
-      parentPort?.postMessage({
-        type: 'progress',
-        provider: workerData.provider,
-        layer,
-        generatedTokens: 0,
-        flops: 0,
-        flopsPerSecond: 0,
-        elapsedMs: now
-      })
-    }
-  }).then(result => ({ provider: workerData.provider, ok: true, result }))
+  const modelBuffer = await readModel()
+  const m = new Model(modelBuffer)
+  const counter: Counters = { dispatches: 0, flops: 0, forwardMs: 0 }
+  const originalMm = Runtime.prototype.mm
+  Runtime.prototype.mm = async function (a: Float32Array, m: number, k: number, wi: number, n: number) {
+    counter.flops += 2 * m * k * n
+    return originalMm.call(this, a, m, k, wi, n)
+  }
+  const startedAt = performance.now()
+  let layerEvents = 0
+  try {
+    const result = await infer({
+      device, modelBuffer, prompt: workerData.prompt, tools: workerData.tools,
+      maxTokens: workerData.maxTokens,
+      onLayer: (layer) => {
+        layerEvents++
+        const numLayers = m.g.num_layers as number
+        const generatedTokens = Math.floor((layerEvents - 1) / numLayers) + 1
+        const elapsedMs = Math.max(1, performance.now() - startedAt)
+        parentPort?.postMessage({
+          type: 'progress', provider: workerData.provider, layer, generatedTokens,
+          flops: counter.flops,
+          flopsPerSecond: counter.flops / (elapsedMs / 1000), elapsedMs
+        })
+      }
+    })
+    return { provider: workerData.provider, ok: true, result }
+  } finally {
+    Runtime.prototype.mm = originalMm
+  }
 }
 
-run().then(result => parentPort?.postMessage({ type: 'result', ...result })).catch(error => parentPort?.postMessage({
-  type: 'result',
-  provider: workerData.provider,
-  ok: false,
+;(workerData.provider === 'jax' ? runJax() : runWebgpu()).then(result => {
+  parentPort?.postMessage({ type: 'result', ...result })
+}).catch(error => parentPort?.postMessage({
+  type: 'result', provider: workerData.provider, ok: false,
   error: error instanceof Error ? error.message : String(error)
 }))
