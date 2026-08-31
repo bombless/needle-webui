@@ -22,10 +22,16 @@ npm run dev
 
 ## Node.js CLI
 
-Node.js 使用 `webgpu`（Dawn）获取同一物理 GPU 的 WebGPU adapter；浏览器中的 `GPUDevice` 无法跨进程直接转移，因此 CLI worker 会各自创建兼容的 device。多个 provider 会并行运行，全部完成或超时后一次性打印 JSON 结果：
+Node.js 使用 `webgpu`（Dawn）获取同一物理 GPU 的 WebGPU adapter；浏览器中的 `GPUDevice` 无法跨进程直接转移，因此 CLI worker 会各自创建兼容的 device。多个 provider 会并行运行，全部完成或超时后一次性打印 JSON 结果。
 
 ```sh
 npm run cli -- --cact needle2.cact --tools tools.json --prompt "my prompt"
+```
+
+如果指定 `--jax`，CLI 会改用 `jax-js` 执行 GEMM，不创建 Node WebGPU/Dawn device；jax-js 会自行优先使用 WebGPU backend，不可用时回退 WASM：
+
+```sh
+npm run cli -- --cact needle2.cact --jax
 ```
 
 `--tools` 和 `--prompt` 都是可选的；省略时直接复用页面“填入示例工具”里的工具定义和请求：`set_lights`，提示词为 `调用 set_lights, 房间 1, 亮度 0`。因此最简调用为：
@@ -34,7 +40,7 @@ npm run cli -- --cact needle2.cact --tools tools.json --prompt "my prompt"
 npm run cli -- --cact needle2.cact
 ```
 
-可选参数：`--providers webgpu`（也可传逗号分隔的 Dawn backend，例如 `vulkan,d3d12`）、`--timeout 120000`、`--max-tokens 96`。注意 npm 参数需要放在第二个 `--` 之后。
+可选参数：`--jax`、`--providers webgpu`（也可传逗号分隔的 Dawn backend，例如 `vulkan,d3d12`）、`--timeout 120000`、`--max-tokens 96`。指定 `--jax` 时会覆盖 `--providers`，只运行 jax-js。注意 npm 参数需要放在第二个 `--` 之后。
 
 ## 实现说明
 
