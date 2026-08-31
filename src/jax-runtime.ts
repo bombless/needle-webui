@@ -121,15 +121,14 @@ export class JaxRuntime {
       const shape = this.m.t.filter((t: Tensor) => t.dtype !== 4)[wi]?.shape || []
       throw Error(`GEMM weight ${wi} 太小：需要 ${n}x${k}=${need}，实际 ${shape.join('x')} / ${weight.length}`)
     }
-    // WebGPU Runtime binds the complete tensor buffer but its shader only indexes
-    // the first n rows and k columns. JAX must therefore model the same logical
-    // view instead of reshaping the complete backing tensor.
     const aa = np.array(a).reshape([m, k])
     const bb = np.array(weight.subarray(0, need)).reshape([n, k])
     const yy = np.einsum('mk,nk->mn', aa, bb)
     const data = await yy.data()
     const out = new Float32Array(data)
-    yy.dispose()
+    // Do not call yy.dispose(): jax-js arrays participate in ref/move lifetime
+    // management, and manually disposing a value still referenced by the async
+    // computation can invalidate a tracer. data() has completed the dependency.
     this.peakBytes = Math.max(this.peakBytes, this.weightBytes + a.byteLength + out.byteLength)
     const bad = out.findIndex(x => !Number.isFinite(x))
     if (bad >= 0) throw Error(`jax-js GEMM 输出在索引 ${bad} 出现 NaN/Infinity（${m}x${k} · ${k}x${n}）`)
